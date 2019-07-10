@@ -1,8 +1,28 @@
-version: 2
+version: 2.1
+orbs:
+  aws-ecr: circleci/aws-ecr@6.1.0
+executors:
+  default-docker:
+    docker:
+      - image: circleci/node:11.4.0
 jobs:
-  build:
-    docker: # use the docker executor type; machine and macos executors are also supported
-      - image: circleci/node:4.8.2 # the primary container, where your job's commands are run
+  build-and-push-images:
+    # `docker_layer_caching` might speed up the builds but it costs extra money.
+    # We need to investigate the tradeoff.
+    # - docker_layer_caching: true
+    machine: true
     steps:
-      - checkout # check out the code in the project directory
-      - run: echo "hello world" # run the `echo` command
+      - aws-ecr/build-and-push-image:
+          account-url: ECR_ACCOUNT_URL
+          extra-build-args: "--target development-dependencies"
+          repo: "${ECR_REPO_NAME}"
+          tag: "${CIRCLE_SHA1}_dev"
+      - aws-ecr/build-and-push-image:
+          account-url: ECR_ACCOUNT_URL
+          extra-build-args: "--target build"
+          repo: "${ECR_REPO_NAME}"
+          tag: "${CIRCLE_SHA1}_build"
+workflows:
+  build-and-deploy:
+    jobs:
+      - build-and-push-images

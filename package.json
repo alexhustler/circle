@@ -1,0 +1,12 @@
+{
+  "name": "circle",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "scripts": {
+    "build": "rm -rf dist && mkdir dist && cp -r src/* dist"
+  },
+  "dependencies": {
+    "rimraf": "^2.6.3"
+  }
+}
