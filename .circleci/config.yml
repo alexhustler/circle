@@ -31,6 +31,53 @@ commands:
             echo 'export AWS_ACCESS_KEY_ID="<< parameters.aws-access-key-id >>"' >> $BASH_ENV
             echo 'export AWS_SECRET_ACCESS_KEY="<< parameters.aws-secret-access-key >>"' >> $BASH_ENV
             echo 'export AWS_REGION="<< parameters.aws-region >>"' >> $BASH_ENV
+  deploy-services:
+    parameters:
+      deploy-write-services:
+        description: |
+          If this value is false then some write services won't be deployed.
+          This is needed in the test environment.
+        type: boolean
+        default: true
+      cluster-name:
+        description: |
+          Name of the EKS cluster
+        type: string
+      aws-region:
+        description: |
+          AWS Region
+        type: string
+      aws-access-key-id:
+        type: string
+        description: |
+         AWS Access Key ID
+      aws-secret-access-key:
+        type: string
+        description: |
+          AWS Secret Access Key
+    steps:
+      - set-aws-environment-variables:
+          aws-access-key-id: << parameters.aws-access-key-id >>
+          aws-secret-access-key: << parameters.aws-secret-access-key >>
+          aws-region: << parameters.aws-region >>
+      - checkout
+      - aws-eks/update-kubeconfig-with-authenticator:
+          install-kubectl: true
+          cluster-name: << parameters.cluster-name >>
+          aws-region: << parameters.aws-region >>
+      - run:
+          name: Run db migrations
+          command: |
+            # run db migration
+            sh ./scripts/run-db-migration.sh
+      - run:
+          name: deploy
+          command: |
+            # deploy services
+            DEPLOY_WRITE_SERVICES=<< parameters.deploy-write-services >> sh ./scripts/deploy-services.sh
+
+            # check pod status
+            kubectl get pods
 
 jobs:
   build-and-push-images:
@@ -66,54 +113,22 @@ jobs:
           extra-build-args: "--target build"
           repo: "${ECR_REPO_NAME}"
           tag: "${CIRCLE_SHA1}_build-image"
-  deploy-services:
+  deploy-test-environment:
     executor: aws-eks/python3
-    parameters:
-      deploy-write-services:
-        description: |
-          If this value is false then some write services won't be deployed.
-          This is needed in the test environment.
-        type: boolean
-        default: true
-      cluster-name:
-        description: |
-          Name of the EKS cluster
-        type: string
-      aws-region:
-        description: |
-          AWS Region
-        type: string
-      aws-access-key-id:
-        type: string
-        description: |
-         AWS Access Key ID
-      aws-secret-access-key:
-        type: string
-        description: |
-          AWS Secret Access Key
     steps:
-      - set-aws-environment-variables:
-          aws-access-key-id: << parameters.aws-access-key-id >>
-          aws-secret-access-key: << parameters.aws-secret-access-key >>
-          aws-region: << parameters.aws-region >>
-      - checkout
-      - aws-eks/update-kubeconfig-with-authenticator:
-          install-kubectl: true
-          cluster-name: << parameters.cluster-name >>
-          aws-region: << parameters.aws-region >>
+      - deploy-services:
+          deploy-write-services: false
+          aws-region: "${AWS_REGION}"
+          aws-access-key-id: "${TEST_AWS_ACCESS_KEY_ID}"
+          aws-secret-access-key: "${TEST_AWS_SECRET_ACCESS_KEY}"
+          cluster-name: eks-cluster-4 # TODO use env var
+  run-integration-tests:
+    executor: aws-eks/python3
+    steps:
       - run:
-          name: run db migrations
+          name: Run integration tests
           command: |
-            # run db migration
-            sh ./scripts/run-db-migration.sh
-      - run:
-          name: deploy
-          command: |
-            # deploy services
-            DEPLOY_WRITE_SERVICES=<< parameters.deploy-write-services >> sh ./scripts/deploy-services.sh
-
-            # check pod status
-            kubectl get pods
+            echo "integration tests"
 
 workflows:
   deployment:
@@ -127,14 +142,14 @@ workflows:
               only: master
 
       # deploy test environment
-      - deploy-services:
+      - deploy-test-environment:
           requires:
             - build-and-push-images
-          deploy-write-services: false
-          aws-region: "${AWS_REGION}"
-          aws-access-key-id: "${TEST_AWS_ACCESS_KEY_ID}"
-          aws-secret-access-key: "${TEST_AWS_SECRET_ACCESS_KEY}"
-          cluster-name: eks-cluster-4
+
+
+      - run-integration-tests:
+          requires:
+            - deploy-services
 
       # TODO add API urls to param store
       # TODO run integration tests
