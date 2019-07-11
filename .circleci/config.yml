@@ -7,10 +7,10 @@ orbs:
 commands:
   get-kubernetes-status:
     steps:
-      -run:
-        name: "status check"
-        command: |
-          kubectl get services,deployments -o wide
+      - run:
+          name: Status check
+          command: |
+            kubectl get services,deployments -o wide
   set-aws-environment-variables:
     description: |
       Set environment variables so that they can be used in each step of a job.
@@ -91,16 +91,16 @@ commands:
           region: AWS_REGION
       - checkout
       - attach_workspace:
-          # Must be absolute path or relative path from working_directory
+          # The attached workspace contains the docker images which were built in a previous step
           at: /tmp/workspace
       - run:
-          name: "Loading docker images"
+          name: Loading docker images
           command: |
             echo "loading docker images from persisted workspace..."
             docker load -i /tmp/workspace/docker/build-images.tar
             docker images
       - run:
-          name: "Push images"
+          name: Push images
           command: |
             CONTAINER_REGISTRY_URL=<< parameters.container-registry-url >> \
             sh ./scripts/docker-push.sh
@@ -114,7 +114,7 @@ jobs:
     steps:
       - checkout
       - run:
-          name: "save docker images"
+          name: Save docker images
           command: |
             mkdir -p /tmp/workspace/docker
 
@@ -125,14 +125,13 @@ jobs:
             # save all images, with names and tags, in a tar ball
             docker save $(docker images | sed '1d' | awk '{print $1 ":" $2 }') -o /tmp/workspace/docker/build-images.tar
 
-      # Persist the `/tmp/workspace/docker` dir, where the docker images are saved, to be used
-      # in other downstream jobs
+      # Persist the `/tmp/workspace/docker` dir where the docker images are saved.
+      # The docker images will be used in other jobs.
       - persist_to_workspace:
           root: /tmp/workspace
           # Must be relative path from root
           paths:
             - docker
-
   deploy-prod-environment:
     executor: aws-eks/python3
     steps:
@@ -189,30 +188,25 @@ jobs:
           container-registry-url: "${TEST_CONTAINER_REGISTRY_URL}"
   run-integration-tests:
     executor: aws-eks/python3
-    parameters:
-      aws-region:
-        type: string
-      aws-access-key-id:
-        type: string
-      aws-secret-access-key:
-        type: string
-      eks-cluster-name:
-        type: string
     steps:
       - set-aws-environment-variables:
-          aws-access-key-id: << parameters.aws-access-key-id >>
-          aws-secret-access-key: << parameters.aws-secret-access-key >>
-          aws-region: << parameters.aws-region >>
+          aws-access-key-id: "${TEST_AWS_ACCESS_KEY_ID}"
+          aws-secret-access-key: "${TEST_AWS_SECRET_ACCESS_KEY}"
+          aws-region: "${AWS_REGION}"
       - checkout
       - aws-eks/update-kubeconfig-with-authenticator:
           install-kubectl: true
-          cluster-name: << parameters.eks-cluster-name >>
-          aws-region: << parameters.aws-region >>
+          cluster-name: "${EKS_CLUSTER_NAME}"
+          aws-region: "${AWS_REGION}"
       - run:
-          name: Run integration tests
+          name: Add API urls to param store
+          command: |
+            # TODO
+            echo "add API urls to param store"
+      - run:
+          name: Run tests
           command: |
             echo "run integration tests"
-            # TODO add API urls to param store
             # sh run-integration-tests.sh
       - get-kubernetes-status
 
@@ -234,10 +228,6 @@ workflows:
             - push-images-to-test
 
       - run-integration-tests:
-          aws-region: "${AWS_REGION}"
-          aws-access-key-id: "${TEST_AWS_ACCESS_KEY_ID}"
-          aws-secret-access-key: "${TEST_AWS_SECRET_ACCESS_KEY}"
-          eks-cluster-name: "${EKS_CLUSTER_NAME}"
           requires:
             - deploy-test-environment
 
