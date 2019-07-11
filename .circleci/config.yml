@@ -102,11 +102,18 @@ jobs:
           cluster-name: << parameters.cluster-name >>
           aws-region: << parameters.aws-region >>
       - run:
+          name: run db migrations
           command: |
-            # TODO db migration
+            # run db migration
+            sh ./scripts/run-db-migration.sh
+      - run:
+          name: deploy
+          command: |
+            # deploy services
             DEPLOY_WRITE_SERVICES=<< parameters.deploy-write-services >> sh ./scripts/deploy-services.sh
+
+            # check pod status
             kubectl get pods
-          name: Deploy
 
 workflows:
   deployment:
