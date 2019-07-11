@@ -2,8 +2,10 @@
 
 set -eu
 
+githash=$(echo $CIRCLE_SHA1 | head -c7)
+
 deployService() {
-  sed -e 's/__IMAGE_URL__/'"$ECR_ACCOUNT_URL\\/$ECR_REPO_NAME\\:${CIRCLE_SHA1}_$1"'/g' < deploy/$2.yaml | kubectl apply --filename -
+  sed -e 's/__IMAGE_URL__/'"$CONTAINER_REGISTRY_URL\\/$1\\:$githash"'/g' < deploy/$2.yaml | kubectl apply --filename -
 }
 
 deployService build-image service-1

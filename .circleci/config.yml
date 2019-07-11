@@ -3,10 +3,14 @@ version: 2.1
 orbs:
   aws-ecr: circleci/aws-ecr@6.1.0
   aws-eks: circleci/aws-eks@0.1.0
-  kubernetes: circleci/kubernetes@0.3.0
-  aws-cli: circleci/aws-cli@0.1.1
 
 commands:
+  get-kubernetes-status:
+    steps:
+      -run:
+        name: "status check"
+        command: |
+          kubectl get services,deployments -o wide
   set-aws-environment-variables:
     description: |
       Set environment variables so that they can be used in each step of a job.
@@ -14,16 +18,10 @@ commands:
     parameters:
       aws-access-key-id:
         type: string
-        description: |
-         AWS Access Key ID
       aws-secret-access-key:
         type: string
-        description: |
-          AWS Secret Access Key
       aws-region:
         type: string
-        description: |
-          AWS Region
     steps:
       - run:
           name: Set environment variables
@@ -39,22 +37,16 @@ commands:
           This is needed in the test environment.
         type: boolean
         default: true
-      cluster-name:
-        description: |
-          Name of the EKS cluster
+      eks-cluster-name:
         type: string
       aws-region:
-        description: |
-          AWS Region
         type: string
       aws-access-key-id:
         type: string
-        description: |
-         AWS Access Key ID
       aws-secret-access-key:
         type: string
-        description: |
-          AWS Secret Access Key
+      container-registry-url:
+        type: string
     steps:
       - set-aws-environment-variables:
           aws-access-key-id: << parameters.aws-access-key-id >>
@@ -63,7 +55,7 @@ commands:
       - checkout
       - aws-eks/update-kubeconfig-with-authenticator:
           install-kubectl: true
-          cluster-name: << parameters.cluster-name >>
+          cluster-name: << parameters.eks-cluster-name >>
           aws-region: << parameters.aws-region >>
       - run:
           name: Run db migrations
@@ -74,89 +66,193 @@ commands:
           name: deploy
           command: |
             # deploy services
-            DEPLOY_WRITE_SERVICES=<< parameters.deploy-write-services >> sh ./scripts/deploy-services.sh
-
-            # check pod status
-            kubectl get pods
-
-jobs:
-  build-and-push-images:
-    # `docker_layer_caching` might speed up the builds but it costs extra money.
-    # We need to investigate the tradeoff.
-    # docker_layer_caching: true
-    machine: true
+            CONTAINER_REGISTRY_URL=<< parameters.container-registry-url >> \
+            DEPLOY_WRITE_SERVICES=<< parameters.deploy-write-services >> \
+            sh ./scripts/deploy-services.sh
+      - get-kubernetes-status
+  push-images-to-ecr:
+    description: |
+      Pushes docker images, which have been persisted in the workspace, to ECR
     parameters:
-      aws-access-key-id:
-        type: string
-        description: |
-         AWS Access Key ID
-      aws-secret-access-key:
-        type: string
-        description: |
-          AWS Secret Access Key
       aws-region:
         type: string
-        description: |
-          AWS Region
+      aws-access-key-id:
+        type: string
+      aws-secret-access-key:
+        type: string
+      container-registry-url:
+        type: string
     steps:
       - set-aws-environment-variables:
           aws-access-key-id: << parameters.aws-access-key-id >>
           aws-secret-access-key: << parameters.aws-secret-access-key >>
           aws-region: << parameters.aws-region >>
-      - aws-ecr/build-and-push-image:
-          account-url: ECR_ACCOUNT_URL
-          extra-build-args: "--target development-dependencies"
-          repo: "${ECR_REPO_NAME}"
-          tag: "${CIRCLE_SHA1}_dev-image"
-      - aws-ecr/build-and-push-image:
-          account-url: ECR_ACCOUNT_URL
-          extra-build-args: "--target build"
-          repo: "${ECR_REPO_NAME}"
-          tag: "${CIRCLE_SHA1}_build-image"
+      - aws-ecr/ecr-login:
+          region: AWS_REGION
+      - checkout
+      - attach_workspace:
+          # Must be absolute path or relative path from working_directory
+          at: /tmp/workspace
+      - run:
+          name: "Loading docker images"
+          command: |
+            echo "loading docker images from persisted workspace..."
+            docker load -i /tmp/workspace/docker/build-images.tar
+            docker images
+      - run:
+          name: "Push images"
+          command: |
+            CONTAINER_REGISTRY_URL=<< parameters.container-registry-url >> \
+            sh ./scripts/docker-push.sh
+
+jobs:
+  build-images:
+    # `docker_layer_caching` will speed up the builds but it costs extra money.
+    # We need to investigate the tradeoff.
+    # docker_layer_caching: true
+    machine: true
+    steps:
+      - checkout
+      - run:
+          name: "save docker images"
+          command: |
+            mkdir -p /tmp/workspace/docker
+
+            sh ./scripts/docker-build.sh
+
+            docker images
+
+            # save all images, with names and tags, in a tar ball
+            docker save $(docker images | sed '1d' | awk '{print $1 ":" $2 }') -o /tmp/workspace/docker/build-images.tar
+
+      # Persist the `/tmp/workspace/docker` dir, where the docker images are saved, to be used
+      # in other downstream jobs
+      - persist_to_workspace:
+          root: /tmp/workspace
+          # Must be relative path from root
+          paths:
+            - docker
+
+  deploy-prod-environment:
+    executor: aws-eks/python3
+    steps:
+      - deploy-services:
+          deploy-write-services: true
+          aws-region: "${AWS_REGION}"
+          aws-access-key-id: "${PROD_AWS_ACCESS_KEY_ID}"
+          aws-secret-access-key: "${PROD_AWS_SECRET_ACCESS_KEY}"
+          container-registry-url: "${PROD_CONTAINER_REGISTRY_URL}"
+          eks-cluster-name: "${EKS_CLUSTER_NAME}"
+  deploy-sandbox-environment:
+    executor: aws-eks/python3
+    steps:
+      - deploy-services:
+          deploy-write-services: true
+          aws-region: "${AWS_REGION}"
+          aws-access-key-id: "${SANDBOX_AWS_ACCESS_KEY_ID}"
+          aws-secret-access-key: "${SANDBOX_AWS_SECRET_ACCESS_KEY}"
+          container-registry-url: "${SANDBOX_CONTAINER_REGISTRY_URL}"
+          eks-cluster-name: "${EKS_CLUSTER_NAME}"
   deploy-test-environment:
     executor: aws-eks/python3
     steps:
       - deploy-services:
-          deploy-write-services: false
           aws-region: "${AWS_REGION}"
           aws-access-key-id: "${TEST_AWS_ACCESS_KEY_ID}"
           aws-secret-access-key: "${TEST_AWS_SECRET_ACCESS_KEY}"
-          cluster-name: eks-cluster-4 # TODO use env var
+          container-registry-url: "${TEST_CONTAINER_REGISTRY_URL}"
+          deploy-write-services: false
+          eks-cluster-name: "${EKS_CLUSTER_NAME}"
+  push-images-to-prod:
+    machine: true
+    steps:
+      - push-images-to-ecr:
+          aws-region: "${AWS_REGION}"
+          aws-access-key-id: "${PROD_AWS_ACCESS_KEY_ID}"
+          aws-secret-access-key: "${PROD_AWS_SECRET_ACCESS_KEY}"
+          container-registry-url: "${PROD_CONTAINER_REGISTRY_URL}"
+  push-images-to-sandbox:
+    machine: true
+    steps:
+      - push-images-to-ecr:
+          aws-region: "${AWS_REGION}"
+          aws-access-key-id: "${SANDBOX_AWS_ACCESS_KEY_ID}"
+          aws-secret-access-key: "${SANDBOX_AWS_SECRET_ACCESS_KEY}"
+          container-registry-url: "${SANDBOX_CONTAINER_REGISTRY_URL}"
+  push-images-to-test:
+    machine: true
+    steps:
+      - push-images-to-ecr:
+          aws-region: "${AWS_REGION}"
+          aws-access-key-id: "${TEST_AWS_ACCESS_KEY_ID}"
+          aws-secret-access-key: "${TEST_AWS_SECRET_ACCESS_KEY}"
+          container-registry-url: "${TEST_CONTAINER_REGISTRY_URL}"
   run-integration-tests:
     executor: aws-eks/python3
+    parameters:
+      aws-region:
+        type: string
+      aws-access-key-id:
+        type: string
+      aws-secret-access-key:
+        type: string
+      eks-cluster-name:
+        type: string
     steps:
+      - set-aws-environment-variables:
+          aws-access-key-id: << parameters.aws-access-key-id >>
+          aws-secret-access-key: << parameters.aws-secret-access-key >>
+          aws-region: << parameters.aws-region >>
+      - checkout
+      - aws-eks/update-kubeconfig-with-authenticator:
+          install-kubectl: true
+          cluster-name: << parameters.eks-cluster-name >>
+          aws-region: << parameters.aws-region >>
       - run:
           name: Run integration tests
           command: |
-            echo "integration tests"
+            echo "run integration tests"
+            # TODO add API urls to param store
+            # sh run-integration-tests.sh
+      - get-kubernetes-status
 
 workflows:
-  deployment:
+  deploy-master:
     jobs:
-      - build-and-push-images:
-          aws-region: "${AWS_REGION}"
-          aws-access-key-id: "${TEST_AWS_ACCESS_KEY_ID}"
-          aws-secret-access-key: "${TEST_AWS_SECRET_ACCESS_KEY}"
+
+      - build-images:
           filters:
             branches:
               only: master
 
-      # deploy test environment
+      - push-images-to-test:
+          requires:
+            - build-images
+
       - deploy-test-environment:
           requires:
-            - build-and-push-images
-
+            - push-images-to-test
 
       - run-integration-tests:
+          aws-region: "${AWS_REGION}"
+          aws-access-key-id: "${TEST_AWS_ACCESS_KEY_ID}"
+          aws-secret-access-key: "${TEST_AWS_SECRET_ACCESS_KEY}"
+          eks-cluster-name: "${EKS_CLUSTER_NAME}"
           requires:
-            - deploy-services
+            - deploy-test-environment
 
-      # TODO add API urls to param store
-      # TODO run integration tests
+      - push-images-to-sandbox:
+          requires:
+            - run-integration-tests
 
-      # - deploy-services:
-      #     requires:
-      #       - deploy-test
-      # - deploy-services:
-      #     requires:
-      #       - deploy-test
+      - push-images-to-prod:
+          requires:
+            - run-integration-tests
+
+      - deploy-sandbox-environment:
+          requires:
+            - push-images-to-sandbox
+
+      - deploy-prod-environment:
+          requires:
+            - push-images-to-prod
