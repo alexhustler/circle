@@ -72,7 +72,7 @@ commands:
       - get-kubernetes-status
   push-images-to-ecr:
     description: |
-      Pushes docker images, which have been persisted in the workspace, to ECR
+      Pushes the build images, which have been persisted in the workspace, to ECR
     parameters:
       aws-region:
         type: string
